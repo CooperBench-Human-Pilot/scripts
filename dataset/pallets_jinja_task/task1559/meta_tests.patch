@@ -1,0 +1,1862 @@
+diff --git a/tests/test_ext.py b/tests/test_ext.py
+index b54e905f..89f712a9 100644
+--- a/tests/test_ext.py
++++ b/tests/test_ext.py
+@@ -8,6 +8,7 @@ from jinja2 import Environment
+ from jinja2 import nodes
+ from jinja2 import pass_context
+ from jinja2.exceptions import TemplateAssertionError
++from jinja2.exceptions import TemplateSyntaxError
+ from jinja2.ext import Extension
+ from jinja2.lexer import count_newlines
+ from jinja2.lexer import Token
+@@ -43,6 +44,9 @@ newstyle_i18n_templates = {
+     "pgettext.html": '{{ pgettext("fruit", "Apple") }}',
+     "npgettext.html": '{{ npgettext("fruit", "%(num)s apple", "%(num)s apples",'
+     " apples) }}",
++    "pgettext_block": "{% trans 'fruit' num=apples %}Apple{% endtrans %}",
++    "npgettext_block": "{% trans 'fruit' num=apples %}{{ num }} apple"
++    "{% pluralize %}{{ num }} apples{% endtrans %}",
+     "transvars1.html": "{% trans %}User: {{ num }}{% endtrans %}",
+     "transvars2.html": "{% trans num=count %}User: {{ num }}{% endtrans %}",
+     "transvars3.html": "{% trans count=num %}User: {{ count }}{% endtrans %}",
+@@ -315,6 +319,123 @@ class TestInternationalization:
+         tmpl = i18n_env.get_template("child.html")
+         assert tmpl.render(LANGUAGE="de") == "<title>fehlend</title>pass auf"
+ 
++    def test_trans_metadata_basic(self):
++        """Test basic metadata functionality with single parameter."""
++        tmpl = i18n_env.from_string(
++            '{% trans note="Context for translators" %}Hello World{% endtrans %}'
++        )
++        assert tmpl.render() == "Hello World"
++
++        # Check that metadata is stored in the AST
++        ast = i18n_env.parse('{% trans note="Context for translators" %}Hello World{% endtrans %}')
++        output_nodes = list(ast.find_all(nodes.Output))
++        assert len(output_nodes) == 1
++        assert hasattr(output_nodes[0], 'trans_metadata')
++        assert output_nodes[0].trans_metadata == {"note": "Context for translators"}
++
++    def test_trans_metadata_multiple_params(self):
++        """Test metadata with multiple parameters."""
++        tmpl = i18n_env.from_string(
++            '{% trans note="Context", created="2024-01-01", modified="2024-01-02" %}Hello World{% endtrans %}'
++        )
++        assert tmpl.render() == "Hello World"
++
++        # Check metadata storage
++        ast = i18n_env.parse('{% trans note="Context", created="2024-01-01", modified="2024-01-02" %}Hello World{% endtrans %}')
++        output_nodes = list(ast.find_all(nodes.Output))
++        assert len(output_nodes) == 1
++        assert hasattr(output_nodes[0], 'trans_metadata')
++        expected_metadata = {
++            "note": "Context",
++            "created": "2024-01-01",
++            "modified": "2024-01-02"
++        }
++        assert output_nodes[0].trans_metadata == expected_metadata
++
++    def test_trans_metadata_with_variables(self):
++        """Test metadata combined with variables."""
++        tmpl = i18n_env.from_string(
++            '{% trans user_count, note="User count message" %}{{ user_count }} user{% pluralize %}{{ user_count }} users{% endtrans %}'
++        )
++        assert tmpl.render(user_count=1) == "1 user"
++        assert tmpl.render(user_count=5) == "5 users"
++
++    def test_trans_metadata_with_trimmed(self):
++        """Test metadata works with trimmed modifier."""
++        tmpl = i18n_env.from_string(
++            '{% trans trimmed, note="Trimmed message" %}  Hello  \n  World  {% endtrans %}'
++        )
++        assert tmpl.render() == "Hello World"
++
++    def test_trans_metadata_empty_value(self):
++        """Test metadata with empty string value."""
++        tmpl = i18n_env.from_string(
++            '{% trans note="" %}Hello World{% endtrans %}'
++        )
++        assert tmpl.render() == "Hello World"
++
++        # Check metadata storage
++        ast = i18n_env.parse('{% trans note="" %}Hello World{% endtrans %}')
++        output_nodes = list(ast.find_all(nodes.Output))
++        assert len(output_nodes) == 1
++        assert hasattr(output_nodes[0], 'trans_metadata')
++        assert output_nodes[0].trans_metadata == {"note": ""}
++
++    def test_trans_metadata_duplicate_error(self):
++        """Test error when metadata parameter is defined twice."""
++        with pytest.raises(TemplateAssertionError, match=r"note.*(defined|specified).*(twice|multiple|duplicate)"):
++            i18n_env.from_string('{% trans note="First", note="Second" %}Hello{% endtrans %}')
++
++    def test_trans_metadata_non_string_error(self):
++        """Test error when metadata value is not a string literal."""
++        with pytest.raises(TemplateAssertionError, match=r"note.*(string|literal|constant)"):
++            i18n_env.from_string('{% trans note=variable %}Hello{% endtrans %}')
++
++    def test_trans_metadata_with_pluralization(self):
++        """Test metadata with pluralization."""
++        tmpl = i18n_env.from_string(
++            '{% trans count, note="Item count" %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}'
++        )
++        assert tmpl.render(count=1) == "1 item"
++        assert tmpl.render(count=3) == "3 items"
++
++    def test_trans_metadata_backward_compatibility(self):
++        """Test that trans without metadata still works."""
++        tmpl = i18n_env.from_string('{% trans %}Hello World{% endtrans %}')
++        assert tmpl.render() == "Hello World"
++
++        tmpl = i18n_env.from_string('{% trans name="World" %}Hello {{ name }}{% endtrans %}')
++        assert tmpl.render() == "Hello World"
++
++    def test_trans_metadata_special_characters(self):
++        """Test metadata with special characters."""
++        tmpl = i18n_env.from_string(
++            '{% trans note="Special: <>&\\"" %}Hello{% endtrans %}'
++        )
++        assert tmpl.render() == "Hello"
++
++        # Check metadata storage
++        ast = i18n_env.parse('{% trans note="Special: <>&\\"" %}Hello{% endtrans %}')
++        output_nodes = list(ast.find_all(nodes.Output))
++        assert len(output_nodes) == 1
++        assert hasattr(output_nodes[0], 'trans_metadata')
++        assert output_nodes[0].trans_metadata == {"note": 'Special: <>&"'}
++
++    def test_trans_metadata_long_value(self):
++        """Test metadata with very long string values."""
++        long_note = "A" * 1000
++        tmpl = i18n_env.from_string(
++            f'{{% trans note="{long_note}" %}}Hello{{% endtrans %}}'
++        )
++        assert tmpl.render() == "Hello"
++
++    def test_trans_metadata_unicode(self):
++        """Test metadata with Unicode characters."""
++        tmpl = i18n_env.from_string(
++            '{% trans note="Unicode: àáâãäåæçèéêë 中文 🌍" %}Hello{% endtrans %}'
++        )
++        assert tmpl.render() == "Hello"
++
+     def test_trans_plural(self):
+         tmpl = i18n_env.get_template("plural.html")
+         assert tmpl.render(LANGUAGE="de", user_count=1) == "Ein Benutzer online"
+@@ -499,6 +620,7 @@ class TestScope:
+         assert tmpl.render(b=3, e=4) == "1|2|2|4|5"
+ 
+ 
++# feature1 - Context blocks for pgettext
+ class TestNewstyleInternationalization:
+     def test_trans(self):
+         tmpl = newstyle_i18n_env.get_template("child.html")
+@@ -593,11 +715,1446 @@ class TestNewstyleInternationalization:
+         tmpl = newstyle_i18n_env.get_template("pgettext.html")
+         assert tmpl.render(LANGUAGE="de") == "Apple"
+ 
+-    def test_context_newstyle_plural(self):
++    def test_context_plural(self):
+         tmpl = newstyle_i18n_env.get_template("npgettext.html")
+         assert tmpl.render(LANGUAGE="de", apples=1) == "1 Apple"
+         assert tmpl.render(LANGUAGE="de", apples=5) == "5 Apples"
+ 
++    def test_context_block(self):
++        tmpl = newstyle_i18n_env.get_template("pgettext_block")
++        assert tmpl.render(LANGUAGE="de") == "Apple"
++
++    def test_context_plural_block(self):
++        tmpl = newstyle_i18n_env.get_template("npgettext_block")
++        assert tmpl.render(LANGUAGE="de", apples=1) == "1 Apple"
++        assert tmpl.render(LANGUAGE="de", apples=5) == "5 Apples"
++
++
++# feature2 - Translation domains
++# (Duplicate TestTranslationDomain removed - see line 1959 for the correct definition)
++    def test_trans_domain_basic(self):
++        """Test basic domain functionality with trans tag."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Mock domain-aware gettext functions
++        def mock_dgettext(domain, message):
++            if domain == "admin":
++                return f"ADMIN:{message}"
++            return message
++
++        def mock_dngettext(domain, singular, plural, n):
++            if domain == "admin":
++                return f"ADMIN:{singular if n == 1 else plural}"
++            return singular if n == 1 else plural
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++            "dgettext": mock_dgettext,
++            "dngettext": mock_dngettext,
++        })
++
++        # Test basic domain usage
++        tmpl = env.from_string('{% trans domain="admin" %}Hello World{% endtrans %}')
++        assert tmpl.render() == "ADMIN:Hello World"
++
++    def test_trans_domain_with_variables(self):
++        """Test domain with variables."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            if domain == "ui":
++                return f"UI:{message}"
++            return message
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="ui", name="John" %}Hello {{ name }}{% endtrans %}')
++        assert tmpl.render() == "UI:Hello %(name)s" % {"name": "John"}
++
++    def test_trans_domain_plural(self):
++        """Test domain with pluralization."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dngettext(domain, singular, plural, n):
++            if domain == "messages":
++                return f"MSG:{singular if n == 1 else plural}"
++            return singular if n == 1 else plural
++
++        env.globals.update({
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++            "dngettext": mock_dngettext,
++        })
++
++        tmpl = env.from_string(
++            '{% trans domain="messages", count=1 %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}'
++        )
++        assert tmpl.render() == "MSG:%(count)s item" % {"count": 1}
++
++        tmpl = env.from_string(
++            '{% trans domain="messages", count=2 %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}'
++        )
++        assert tmpl.render() == "MSG:%(count)s items" % {"count": 2}
++
++    def test_trans_domain_with_trimmed(self):
++        """Test domain with trimmed option."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            if domain == "admin":
++                return f"ADMIN:{message}"
++            return message
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string(
++            '{% trans domain="admin", trimmed %}  Hello  \n  World  {% endtrans %}'
++        )
++        assert tmpl.render() == "ADMIN:Hello World"
++
++    def test_trans_domain_error_duplicate(self):
++        """Test error when domain is defined twice."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        with pytest.raises(TemplateAssertionError):
++            env.from_string('{% trans domain="admin", domain="ui" %}Hello{% endtrans %}')
++
++    def test_trans_domain_error_non_string(self):
++        """Test error when domain is not a string literal."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        with pytest.raises(TemplateAssertionError):
++            env.from_string('{% trans domain=variable %}Hello{% endtrans %}')
++
++    def test_trans_domain_empty_string(self):
++        """Test domain with empty string."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            return f"DOMAIN[{domain}]:{message}"
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="" %}Hello{% endtrans %}')
++        assert tmpl.render() == "DOMAIN[]:Hello"
++
++    def test_trans_domain_special_chars(self):
++        """Test domain with special characters."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            return f"DOMAIN[{domain}]:{message}"
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="admin-ui_v2.0" %}Hello{% endtrans %}')
++        assert tmpl.render() == "DOMAIN[admin-ui_v2.0]:Hello"
++
++    def test_trans_domain_backward_compatibility(self):
++        """Test that trans without domain still works."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        env.globals.update({
++            "gettext": lambda x: f"DEFAULT:{x}",
++            "ngettext": lambda s, p, n: f"DEFAULT:{s if n == 1 else p}",
++        })
++
++        # Test without domain
++        tmpl = env.from_string('{% trans %}Hello World{% endtrans %}')
++        assert tmpl.render() == "DEFAULT:Hello World"
++
++        # Test plural without domain
++        tmpl = env.from_string('{% trans count=2 %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}')
++        assert tmpl.render() == "DEFAULT:%(count)s items" % {"count": 2}
++
++    def test_trans_domain_with_context_vars(self):
++        """Test domain with context variables."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            return f"{domain.upper()}:{message}"
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="user" %}Welcome {{ username }}{% endtrans %}')
++        result = tmpl.render(username="Alice")
++        assert result == "USER:Welcome %(username)s" % {"username": "Alice"}
++
++    def test_trans_domain_long_string(self):
++        """Test domain with very long domain name."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            return f"[{len(domain)}]:{message}"
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        long_domain = "a" * 100
++        tmpl = env.from_string(f'{{% trans domain="{long_domain}" %}}Hello{{% endtrans %}}')
++        assert tmpl.render() == "[100]:Hello"
++
++    def test_trans_domain_newstyle_gettext(self):
++        """Test domain with newstyle gettext."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.newstyle_gettext = True  # type: ignore
++
++        def mock_dgettext(domain, message, **kw):
++            result = f"{domain.upper()}:{message}"
++            return result % kw if kw else result
++
++        env.globals.update({
++            "gettext": lambda x, **kw: x % kw if kw else x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="admin", name="John" %}Hello {{ name }}{% endtrans %}')
++        assert tmpl.render() == "ADMIN:Hello John"
++
++
++# feature3 - Translation version control
++class TestTranslationVersionControl:
++    def test_set_and_get_translation_version(self):
++        """Test setting and getting translation versions."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        message = "Hello World"
++        version = "1.0"
++
++        env.set_translation_version(message, version)
++        assert env.get_translation_version(message) == version
++
++    def test_get_nonexistent_translation_version(self):
++        """Test getting version for non-existent translation."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        assert env.get_translation_version("nonexistent") is None
++
++    def test_compare_translation_versions_same(self):
++        """Test comparing versions of same translation strings."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        message1 = "Hello World"
++        message2 = "Hello World"
++        version = "1.0"
++
++        env.set_translation_version(message1, version)
++        env.set_translation_version(message2, version)
++        assert env.compare_translation_versions(message1, message2) is True
++
++    def test_compare_translation_versions_different(self):
++        """Test comparing versions of different translation strings."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        message1 = "Hello World"
++        message2 = "Goodbye World"
++
++        env.set_translation_version(message1, "1.0")
++        env.set_translation_version(message2, "2.0")
++        assert env.compare_translation_versions(message1, message2) is False
++
++    def test_compare_translation_versions_unversioned(self):
++        """Test comparing versions when one string is unversioned."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        message1 = "Hello World"
++        message2 = "Goodbye World"
++
++        env.set_translation_version(message1, "1.0")
++        assert env.compare_translation_versions(message1, message2) is False
++
++    def test_version_control_with_empty_string(self):
++        """Test version control with empty strings."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        message = ""
++        version = "1.0"
++
++        env.set_translation_version(message, version)
++        assert env.get_translation_version(message) == version
++
++    def test_version_control_with_unicode(self):
++        """Test version control with unicode strings."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        message = "Héllo Wörld 🌍"
++        version = "1.0"
++
++        env.set_translation_version(message, version)
++        assert env.get_translation_version(message) == version
++
++    def test_version_control_with_long_string(self):
++        """Test version control with very long strings."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        message = "A" * 10000
++        version = "1.0"
++
++        env.set_translation_version(message, version)
++        assert env.get_translation_version(message) == version
++
++    def test_version_update(self):
++        """Test updating version of existing translation."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        message = "Hello World"
++
++        env.set_translation_version(message, "1.0")
++        assert env.get_translation_version(message) == "1.0"
++
++        env.set_translation_version(message, "2.0")
++        assert env.get_translation_version(message) == "2.0"
++
++    def test_version_control_multiple_messages(self):
++        """Test version control with multiple different messages."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        messages = ["Hello", "World", "Foo", "Bar"]
++        versions = ["1.0", "1.1", "2.0", "2.1"]
++
++        for msg, ver in zip(messages, versions):
++            env.set_translation_version(msg, ver)
++
++        for msg, ver in zip(messages, versions):
++            assert env.get_translation_version(msg) == ver
++
++    def test_version_control_hash_collision_resistance(self):
++        """Test that different strings don't collide in version storage."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # These strings are different but could potentially have hash collisions
++        message1 = "Hello World"
++        message2 = "Hello World!"
++
++        env.set_translation_version(message1, "1.0")
++        env.set_translation_version(message2, "2.0")
++
++        assert env.get_translation_version(message1) == "1.0"
++        assert env.get_translation_version(message2) == "2.0"
++
++    def test_translation_version_control_flag(self):
++        """Test that translation_version_control flag is set."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        assert hasattr(env, 'translation_version_control')
++        assert env.translation_version_control is True
++
++
++class TestFallbackInternationalization:
++    def test_gettext_fallback_basic(self):
++        """Test basic fallback functionality for gettext."""
++        from jinja2 import Environment
++
++        # Create primary and fallback translation functions
++        def primary_gettext(s):
++            translations = {"hello": "hola"}  # Spanish
++            return translations.get(s, s)
++
++        def fallback_gettext(s):
++            translations = {"hello": "bonjour", "world": "monde"}  # French
++            return translations.get(s, s)
++
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables_with_fallback(
++            primary_gettext,
++            lambda s, p, n: s if n == 1 else p,  # dummy ngettext
++            fallback_gettext_funcs=[fallback_gettext],
++            newstyle=True
++        )
++
++        # Test primary translation works
++        tmpl = env.from_string('{{ gettext("hello") }}')
++        assert tmpl.render() == "hola"
++
++        # Test fallback when primary doesn't have translation
++        tmpl = env.from_string('{{ gettext("world") }}')
++        assert tmpl.render() == "monde"
++
++        # Test no translation found in either
++        tmpl = env.from_string('{{ gettext("missing") }}')
++        assert tmpl.render() == "missing"
++
++    def test_ngettext_fallback_basic(self):
++        """Test basic fallback functionality for ngettext."""
++        from jinja2 import Environment
++
++        def primary_ngettext(s, p, n):
++            translations = {
++                ("item", "items"): ("artículo", "artículos")  # Spanish
++            }
++            result = translations.get((s, p))
++            if result:
++                return result[0] if n == 1 else result[1]
++            return s if n == 1 else p
++
++        def fallback_ngettext(s, p, n):
++            translations = {
++                ("book", "books"): ("livre", "livres")  # French
++            }
++            result = translations.get((s, p))
++            if result:
++                return result[0] if n == 1 else result[1]
++            return s if n == 1 else p
++
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables_with_fallback(
++            lambda s: s,  # dummy gettext
++            primary_ngettext,
++            fallback_ngettext_funcs=[fallback_ngettext],
++            newstyle=True
++        )
++
++        # Test primary translation works
++        tmpl = env.from_string('{{ ngettext("item", "items", 1) }}')
++        assert tmpl.render() == "artículo"
++
++        tmpl = env.from_string('{{ ngettext("item", "items", 2) }}')
++        assert tmpl.render() == "artículos"
++
++        # Test fallback when primary doesn't have translation
++        tmpl = env.from_string('{{ ngettext("book", "books", 1) }}')
++        assert tmpl.render() == "livre"
++
++        tmpl = env.from_string('{{ ngettext("book", "books", 3) }}')
++        assert tmpl.render() == "livres"
++
++    def test_multiple_fallbacks(self):
++        """Test multiple fallback languages in order."""
++        from jinja2 import Environment
++
++        def primary_gettext(s):
++            return {"hello": "hola"}.get(s, s)  # Spanish
++
++        def fallback1_gettext(s):
++            return {"world": "monde"}.get(s, s)  # French
++
++        def fallback2_gettext(s):
++            return {"goodbye": "auf wiedersehen", "world": "welt"}.get(s, s)  # German
++
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables_with_fallback(
++            primary_gettext,
++            lambda s, p, n: s if n == 1 else p,
++            fallback_gettext_funcs=[fallback1_gettext, fallback2_gettext],
++            newstyle=True
++        )
++
++        # Test primary
++        tmpl = env.from_string('{{ gettext("hello") }}')
++        assert tmpl.render() == "hola"
++
++        # Test first fallback
++        tmpl = env.from_string('{{ gettext("world") }}')
++        assert tmpl.render() == "monde"  # Should use French, not German
++
++        # Test second fallback
++        tmpl = env.from_string('{{ gettext("goodbye") }}')
++        assert tmpl.render() == "auf wiedersehen"
++
++    def test_fallback_with_trans_tag(self):
++        """Test fallback functionality with {% trans %} tags."""
++        from jinja2 import Environment, DictLoader
++
++        def primary_gettext(s):
++            return {"Hello World": "Hola Mundo"}.get(s, s)
++
++        def fallback_gettext(s):
++            return {"Missing Translation": "Traduction Manquante"}.get(s, s)
++
++        templates = {
++            "test1.html": "{% trans %}Hello World{% endtrans %}",
++            "test2.html": "{% trans %}Missing Translation{% endtrans %}",
++            "test3.html": "{% trans %}Not Found{% endtrans %}"
++        }
++
++        env = Environment(
++            loader=DictLoader(templates),
++            extensions=["jinja2.ext.i18n"]
++        )
++        env.install_gettext_callables_with_fallback(
++            primary_gettext,
++            lambda s, p, n: s if n == 1 else p,
++            fallback_gettext_funcs=[fallback_gettext],
++            newstyle=True
++        )
++
++        # Test primary translation
++        tmpl = env.get_template("test1.html")
++        assert tmpl.render() == "Hola Mundo"
++
++        # Test fallback translation
++        tmpl = env.get_template("test2.html")
++        assert tmpl.render() == "Traduction Manquante"
++
++        # Test no translation found
++        tmpl = env.get_template("test3.html")
++        assert tmpl.render() == "Not Found"
++
++    def test_fallback_empty_list(self):
++        """Test that empty fallback list works like normal gettext."""
++        from jinja2 import Environment
++
++        def primary_gettext(s):
++            return {"hello": "hola"}.get(s, s)
++
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables_with_fallback(
++            primary_gettext,
++            lambda s, p, n: s if n == 1 else p,
++            fallback_gettext_funcs=[],  # Empty list
++            newstyle=True
++        )
++
++        tmpl = env.from_string('{{ gettext("hello") }}')
++        assert tmpl.render() == "hola"
++
++        tmpl = env.from_string('{{ gettext("missing") }}')
++        assert tmpl.render() == "missing"
++
++    def test_fallback_none(self):
++        """Test that None fallback works like normal gettext."""
++        from jinja2 import Environment
++
++        def primary_gettext(s):
++            return {"hello": "hola"}.get(s, s)
++
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables_with_fallback(
++            primary_gettext,
++            lambda s, p, n: s if n == 1 else p,
++            fallback_gettext_funcs=None,
++            newstyle=True
++        )
++
++        tmpl = env.from_string('{{ gettext("hello") }}')
++        assert tmpl.render() == "hola"
++
++        tmpl = env.from_string('{{ gettext("missing") }}')
++        assert tmpl.render() == "missing"
++
++    def test_fallback_with_variables(self):
++        """Test fallback with variable substitution."""
++        from jinja2 import Environment
++
++        def primary_gettext(s):
++            return {"Hello %(name)s": "Hola %(name)s"}.get(s, s)
++
++        def fallback_gettext(s):
++            return {"Welcome %(name)s": "Bienvenue %(name)s"}.get(s, s)
++
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables_with_fallback(
++            primary_gettext,
++            lambda s, p, n: s if n == 1 else p,
++            fallback_gettext_funcs=[fallback_gettext],
++            newstyle=True
++        )
++
++        # Test primary with variables
++        tmpl = env.from_string('{{ gettext("Hello %(name)s", name="World") }}')
++        assert tmpl.render() == "Hola World"
++
++        # Test fallback with variables
++        tmpl = env.from_string('{{ gettext("Welcome %(name)s", name="User") }}')
++        assert tmpl.render() == "Bienvenue User"
++
++
++class TestTranslationVariableValidation:
++    def test_valid_variable_names(self):
++        """Test that valid variable names are accepted."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        # These should all work fine
++        templates = [
++            "{% trans count=5 %}{{ count }} item{% endtrans %}",
++            "{% trans user_name='John' %}Hello {{ user_name }}{% endtrans %}",
++            "{% trans num=get_count() %}{{ num }} items{% endtrans %}",
++            "{% trans value123=42 %}Value: {{ value123 }}{% endtrans %}",
++        ]
++
++        for template_str in templates:
++            tmpl = env.from_string(template_str)
++            # Should not raise any exceptions during parsing
++            assert tmpl is not None
++
++    def test_invalid_variable_names(self):
++        """Test that invalid variable names are rejected."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # These will be caught by the parser before our validation
++        # but let's test that the parser correctly rejects them
++        invalid_templates = [
++            "{% trans 123invalid=5 %}{{ 123invalid }} item{% endtrans %}",
++        ]
++
++        for template_str in invalid_templates:
++            with pytest.raises(TemplateSyntaxError):
++                env.from_string(template_str)
++
++    def test_reserved_variable_names(self):
++        """Test that reserved translation function names are rejected."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # These variable names conflict with translation functions
++        reserved_templates = [
++            "{% trans gettext='value' %}{{ gettext }}{% endtrans %}",
++            "{% trans ngettext='value' %}{{ ngettext }}{% endtrans %}",
++            "{% trans pgettext='value' %}{{ pgettext }}{% endtrans %}",
++            "{% trans npgettext='value' %}{{ npgettext }}{% endtrans %}",
++            "{% trans dgettext='value' %}{{ dgettext }}{% endtrans %}",
++            "{% trans dngettext='value' %}{{ dngettext }}{% endtrans %}",
++        ]
++
++        for template_str in reserved_templates:
++            with pytest.raises(TemplateSyntaxError, match="conflicts with translation function names"):
++                env.from_string(template_str)
++
++    def test_variable_name_case_sensitivity(self):
++        """Test that variable name validation is case sensitive."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # These should work (different case)
++        valid_templates = [
++            "{% trans GETTEXT='value' %}{{ GETTEXT }}{% endtrans %}",
++            "{% trans Gettext='value' %}{{ Gettext }}{% endtrans %}",
++        ]
++
++        for template_str in valid_templates:
++            tmpl = env.from_string(template_str)
++            assert tmpl is not None
++
++    def test_underscore_function_names(self):
++        """Test that underscore translation function is also reserved."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # The underscore function should also be reserved
++        with pytest.raises(TemplateSyntaxError, match="conflicts with translation function names"):
++            env.from_string("{% trans _='value' %}{{ _ }}{% endtrans %}")
++
++    def test_validation_with_multiple_variables(self):
++        """Test validation with multiple variables."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Valid multiple variables
++        tmpl = env.from_string(
++            "{% trans count=5, name='John' %}{{ count }} items for {{ name }}{% endtrans %}"
++        )
++        assert tmpl is not None
++
++        # Invalid - one reserved name among valid ones
++        with pytest.raises(TemplateSyntaxError, match="conflicts with translation function names"):
++            env.from_string(
++                "{% trans count=5, gettext='John' %}{{ count }} items for {{ gettext }}{% endtrans %}"
++            )
++
++    def test_validation_error_messages(self):
++        """Test that validation error messages are helpful."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Test specific error message content
++        with pytest.raises(TemplateSyntaxError, match=r"Variable name 'gettext' conflicts with translation function names"):
++            env.from_string("{% trans gettext='value' %}{{ gettext }}{% endtrans %}")
++
++    def test_declared_vs_used_variable_validation(self):
++        """Test validation of both declared and used variables."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Valid - declared variable used correctly
++        tmpl = env.from_string(
++            "{% trans user_name='Alice' %}Hello {{ user_name }}{% endtrans %}"
++        )
++        assert tmpl is not None
++
++        # Invalid declared variable name - this will be caught by parser
++        with pytest.raises(TemplateSyntaxError):
++            env.from_string(
++                "{% trans 123count=5 %}{{ 123count }} items for {{ user_name }}{% endtrans %}"
++            )
++
++    def test_edge_cases(self):
++        """Test edge cases for variable validation."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Empty translation block
++        tmpl = env.from_string("{% trans %}Hello world{% endtrans %}")
++        assert tmpl is not None
++
++        # Single character variable names (valid)
++        tmpl = env.from_string("{% trans a=1, b=2 %}{{ a }} and {{ b }}{% endtrans %}")
++        assert tmpl is not None
++
++        # Underscore prefixed names (valid)
++        tmpl = env.from_string("{% trans _private=1 %}{{ _private }}{% endtrans %}")
++        assert tmpl is not None
++
++    def test_complex_expressions(self):
++        """Test validation with complex expressions."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Function calls should be allowed
++        tmpl = env.from_string("{% trans count=get_user_count() %}{{ count }} users{% endtrans %}")
++        assert tmpl is not None
++
++        # Attribute access should be allowed
++        tmpl = env.from_string("{% trans name=user.name %}Hello {{ name }}{% endtrans %}")
++        assert tmpl is not None
++
++    def test_validation_with_trimmed(self):
++        """Test validation works with trimmed option."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Valid with trimmed (correct syntax)
++        tmpl = env.from_string(
++            "{% trans trimmed count=5 %}  {{ count }} item  {% endtrans %}"
++        )
++        assert tmpl is not None
++
++        # Test that our validation still works with trimmed
++        with pytest.raises(TemplateSyntaxError, match="conflicts with translation function names"):
++            env.from_string(
++                "{% trans trimmed gettext=5 %}  {{ gettext }} item  {% endtrans %}"
++            )
++
++
++class TestTranslationPriority:
++    def test_priority_basic_syntax(self):
++        """Test that priority parameter is parsed correctly."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Test basic priority syntax
++        tmpl = env.from_string('{% trans priority=1 %}Hello World{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello World"
++
++    def test_priority_with_variables(self):
++        """Test priority with variable assignments."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        tmpl = env.from_string('{% trans priority=2, name="World" %}Hello {{ name }}{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello World"
++
++
++    def test_priority_variable_expression(self):
++        """Test priority with variable expressions."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        tmpl = env.from_string('{% trans priority=level %}Hello{% endtrans %}')
++        result = tmpl.render(level=3)
++        assert result == "Hello"
++
++    def test_priority_with_trimmed(self):
++        """Test priority works with trimmed modifier."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Test with newlines and whitespace that should be trimmed
++        tmpl = env.from_string('{% trans priority=1, trimmed %}  Hello\n  World  {% endtrans %}')
++        result = tmpl.render()
++        # The trimming should work - newlines and surrounding whitespace get trimmed
++        assert result == "Hello World"
++
++    def test_priority_invalid_values(self):
++        """Test priority handles invalid values gracefully."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Test with string that can't be converted to int
++        tmpl = env.from_string('{% trans priority="invalid" %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello"
++
++        # Test with None
++        tmpl = env.from_string('{% trans priority=none_var %}Hello{% endtrans %}')
++        result = tmpl.render(none_var=None)
++        assert result == "Hello"
++
++    def test_priority_zero_value(self):
++        """Test priority=0 works correctly."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        tmpl = env.from_string('{% trans priority=0 %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello"
++
++    def test_priority_large_values(self):
++        """Test priority with large values."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        tmpl = env.from_string('{% trans priority=100 %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello"
++
++    def test_priority_negative_values(self):
++        """Test priority with negative values (should be treated as 0)."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        tmpl = env.from_string('{% trans priority=-1 %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello"
++
++    def test_priority_with_complex_pluralization(self):
++        """Test priority with complex pluralization scenarios."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        tmpl = env.from_string(
++            '{% trans priority=2, user_count=users|length %}'
++            '{{ user_count }} user online{% pluralize %}'
++            '{{ user_count }} users online{% endtrans %}'
++        )
++        result = tmpl.render(users=[1, 2, 3])
++        assert result == "3 users online"
++
++    def test_priority_syntax_errors(self):
++        """Test that syntax errors are properly handled."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Test that priority can't be used as a variable name when priority is set
++        # This should work fine - priority is handled specially
++        tmpl = env.from_string('{% trans priority=1 %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello"
++
++    def test_priority_backward_compatibility(self):
++        """Test that templates without priority still work."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Standard trans without priority should work as before
++        tmpl = env.from_string('{% trans %}Hello World{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello World"
++
++        # Trans with variables but no priority
++        tmpl = env.from_string('{% trans name="World" %}Hello {{ name }}{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello World"
++
++    def test_priority_with_newstyle_gettext(self):
++        """Test priority works with newstyle gettext."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables(
++            lambda x: x,
++            lambda s, p, n: s if n == 1 else p,
++            newstyle=True
++        )
++
++        # Test basic priority without variables (newstyle gettext compatibility)
++        tmpl = env.from_string('{% trans priority=1 %}Hello World{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello World"
++
++    def test_priority_edge_cases(self):
++        """Test various edge cases for priority."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Empty trans block with priority
++        tmpl = env.from_string('{% trans priority=1 %}{% endtrans %}')
++        result = tmpl.render()
++        assert result == ""
++
++        # Priority with only variables, no text
++        tmpl = env.from_string('{% trans priority=1, x=42 %}{{ x }}{% endtrans %}')
++        result = tmpl.render()
++        assert result == "42"
++
++    def test_priority_parameter_validation(self):
++        """Test that priority parameter validation works correctly."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Test float values get converted to int
++        tmpl = env.from_string('{% trans priority=1.5 %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello"
++
++        # Test boolean values
++        tmpl = env.from_string('{% trans priority=true %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello"
++
++    def test_priority_fallback_behavior(self):
++        """Test that priority parameter is handled correctly."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Simple gettext that returns a translation
++        def mock_gettext(msg):
++            if msg == "Hello":
++                return "Hola"  # Translation available
++            return msg
++
++        env.globals.update({
++            "gettext": mock_gettext,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Test that priority=1 works with available translation
++        tmpl = env.from_string('{% trans priority=1 %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hola"
++
++    def test_priority_maximum_limit(self):
++        """Test that priority stops at maximum limit."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        call_count = [0]
++
++        def mock_gettext(msg):
++            call_count[0] += 1
++            return msg  # Always return untranslated to test limit
++
++        env.globals.update({
++            "gettext": mock_gettext,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        # Test with very high priority - should be limited
++        tmpl = env.from_string('{% trans priority=50 %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hello"
++        # The implementation should limit attempts to reasonable number (10 as per spec)
++        assert call_count[0] <= 11  # Should not exceed reasonable limit
++
++    def test_priority_translation_found_stops_search(self):
++        """Test that priority parameter works with translations."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_gettext(msg):
++            if msg == "Hello":
++                return "Hola"  # Translation available
++            return msg
++
++        env.globals.update({
++            "gettext": mock_gettext,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++        })
++
++        tmpl = env.from_string('{% trans priority=5 %}Hello{% endtrans %}')
++        result = tmpl.render()
++        assert result == "Hola"
++
++
++class TestConditionalInternationalization:
++    def test_basic_conditional_trans(self):
++        env = Environment(extensions=["jinja2.ext.i18n", "jinja2.ext.conditional_i18n"])
++        env.globals.update({
++            "gettext": lambda x: f"TRANSLATED: {x}",
++            "ngettext": lambda s, p, n: f"TRANSLATED: {s if n == 1 else p}",
++        })
++
++        # Test basic conditional translation - condition true
++        tmpl = env.from_string(
++            "{% ctrans True %}Hello World{% fallback %}Fallback Text{% endctrans %}"
++        )
++        assert tmpl.render() == "TRANSLATED: Hello World"
++
++        # Test basic conditional translation - condition false
++        tmpl = env.from_string(
++            "{% ctrans False %}Hello World{% fallback %}Fallback Text{% endctrans %}"
++        )
++        assert tmpl.render() == "Fallback Text"
++
++    def test_conditional_trans_with_variables(self):
++        env = Environment(extensions=["jinja2.ext.i18n", "jinja2.ext.conditional_i18n"])
++        env.globals.update({
++            "gettext": lambda x: f"TRANSLATED: {x}",
++            "ngettext": lambda s, p, n: f"TRANSLATED: {s if n == 1 else p}",
++        })
++
++        # Test with context variables
++        tmpl = env.from_string(
++            "{% ctrans enable_translation %}Hello {{ name }}{% fallback %}Hi {{ name }}{% endctrans %}"
++        )
++        assert tmpl.render(enable_translation=True, name="World") == "TRANSLATED: Hello World"
++        assert tmpl.render(enable_translation=False, name="World") == "Hi World"
++
++    def test_conditional_trans_with_pluralization(self):
++        from jinja2.ext import InternationalizationExtension, conditional_i18n as ConditionalI18nExtension
++        env = Environment(extensions=[InternationalizationExtension, ConditionalI18nExtension])
++        env.globals.update({
++            "gettext": lambda x: f"TRANSLATED: {x}",
++            "ngettext": lambda s, p, n: f"TRANSLATED: {s if n == 1 else p}",
++        })
++
++        # Test with pluralization
++        tmpl = env.from_string(
++            "{% ctrans use_i18n, count %}{{ count }} item{% pluralize %}{{ count }} items{% fallback %}{{ count }} thing(s){% endctrans %}"
++        )
++        assert tmpl.render(use_i18n=True, count=1) == "TRANSLATED: 1 item"
++        assert tmpl.render(use_i18n=True, count=5) == "TRANSLATED: 5 items"
++        assert tmpl.render(use_i18n=False, count=3) == "3 thing(s)"
++
++    def test_conditional_trans_complex_conditions(self):
++        from jinja2.ext import InternationalizationExtension, conditional_i18n as ConditionalI18nExtension
++        env = Environment(extensions=[InternationalizationExtension, ConditionalI18nExtension])
++        env.globals.update({
++            "gettext": lambda x: f"TRANSLATED: {x}",
++        })
++
++        # Test with complex conditions
++        tmpl = env.from_string(
++            "{% ctrans user.is_premium and locale == 'en' %}Premium Content{% fallback %}Basic Content{% endctrans %}"
++        )
++
++        # Premium user with English locale
++        user_premium = type('User', (), {'is_premium': True})()
++        assert tmpl.render(user=user_premium, locale='en') == "TRANSLATED: Premium Content"
++
++        # Non-premium user
++        user_basic = type('User', (), {'is_premium': False})()
++        assert tmpl.render(user=user_basic, locale='en') == "Basic Content"
++
++        # Premium user with different locale
++        assert tmpl.render(user=user_premium, locale='de') == "Basic Content"
++
++    def test_conditional_trans_error_conditions(self):
++        from jinja2.ext import InternationalizationExtension, conditional_i18n as ConditionalI18nExtension
++        env = Environment(extensions=[InternationalizationExtension, ConditionalI18nExtension])
++
++        # Test missing fallback block
++        with pytest.raises(TemplateSyntaxError):
++            env.from_string("{% ctrans True %}Hello{% endctrans %}")
++
++        # Test unclosed block
++        with pytest.raises(TemplateSyntaxError):
++            env.from_string("{% ctrans True %}Hello{% fallback %}Fallback")
++
++    def test_conditional_trans_trimmed(self):
++        from jinja2.ext import InternationalizationExtension, conditional_i18n as ConditionalI18nExtension
++        env = Environment(extensions=[InternationalizationExtension, ConditionalI18nExtension])
++        env.globals.update({
++            "gettext": lambda x: f"TRANSLATED: {x}",
++        })
++
++        # Test trimmed functionality
++        tmpl = env.from_string(
++            "{% ctrans True trimmed %}  Hello  \n  World  {% fallback %}  Fallback  \n  Text  {% endctrans %}"
++        )
++        assert tmpl.render() == "TRANSLATED: Hello World"
++
++        tmpl = env.from_string(
++            "{% ctrans False trimmed %}  Hello  \n  World  {% fallback %}  Fallback  \n  Text  {% endctrans %}"
++        )
++        assert tmpl.render() == "Fallback Text"
++
++    def test_conditional_trans_notrimmed(self):
++        from jinja2.ext import InternationalizationExtension, conditional_i18n as ConditionalI18nExtension
++        env = Environment(extensions=[InternationalizationExtension, ConditionalI18nExtension])
++        env.globals.update({
++            "gettext": lambda x: f"TRANSLATED: {x}",
++        })
++
++        # Test notrimmed functionality
++        tmpl = env.from_string(
++            "{% ctrans True notrimmed %}  Hello  \n  World  {% fallback %}  Fallback  \n  Text  {% endctrans %}"
++        )
++        assert tmpl.render() == "TRANSLATED:   Hello  \n  World  "
++
++        tmpl = env.from_string(
++            "{% ctrans False notrimmed %}  Hello  \n  World  {% fallback %}  Fallback  \n  Text  {% endctrans %}"
++        )
++        assert tmpl.render() == "  Fallback  \n  Text  "
++
++    def test_conditional_trans_duplicate_variables(self):
++        from jinja2.ext import InternationalizationExtension, conditional_i18n as ConditionalI18nExtension
++        env = Environment(extensions=[InternationalizationExtension, ConditionalI18nExtension])
++
++        # Test duplicate variables error
++        with pytest.raises(TemplateAssertionError, match="defined twice"):
++            env.from_string("{% ctrans True, name, name %}Hello {{ name }}{% fallback %}Hi{% endctrans %}")
++
++
++class TestTranslationCaching:
++    def test_cache_size_configuration(self):
++        """Test that cache size can be configured via environment attribute."""
++        # Test default cache size
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        assert hasattr(env, 'i18n_cache_size')
++        assert env.i18n_cache_size == 128
++
++        # Test custom cache size
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.i18n_cache_size = 64
++        assert env.i18n_cache_size == 64
++
++    def test_cache_clear_method(self):
++        """Test that clear_cache method is available and works."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        ext = list(env.extensions.values())[0]  # Get the i18n extension
++
++        # Verify clear_cache method exists and is callable
++        assert hasattr(ext, 'clear_cache')
++        assert callable(ext.clear_cache)
++
++        # Should not raise any exceptions
++        ext.clear_cache()
++
++    def test_transparent_caching_behavior(self):
++        """Test that caching is transparent - same results with repeated calls."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables(
++            lambda x: f"translated_{x}",
++            lambda s, p, n: s if n == 1 else p
++        )
++
++        tmpl = env.from_string('{{ gettext("hello") }}')
++
++        # Multiple renders should produce identical results
++        result1 = tmpl.render()
++        result2 = tmpl.render()
++        result3 = tmpl.render()
++
++        assert result1 == result2 == result3 == "translated_hello"
++
++    def test_multiple_environments_independence(self):
++        """Test that different environments maintain independent caches."""
++        # Create two separate environments
++        env1 = Environment(extensions=["jinja2.ext.i18n"])
++        env2 = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Configure different cache sizes
++        env1.i18n_cache_size = 64
++        env2.i18n_cache_size = 256
++
++        assert env1.i18n_cache_size == 64
++        assert env2.i18n_cache_size == 256
++
++        # Verify they have separate extension instances
++        ext1 = list(env1.extensions.values())[0]
++        ext2 = list(env2.extensions.values())[0]
++        assert ext1 is not ext2
++
++    def test_cache_with_all_translation_functions(self):
++        """Test that caching works transparently with all translation functions."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables(
++            lambda x: f"translated_{x}",
++            lambda s, p, n: s if n == 1 else p,
++            pgettext=lambda c, m: f"{c}:{m}",
++            npgettext=lambda c, s, p, n: f"{c}:{s}" if n == 1 else f"{c}:{p}"
++        )
++
++        # Test basic gettext - multiple calls should be consistent
++        tmpl1 = env.from_string('{{ gettext("hello") }}')
++        assert tmpl1.render() == "translated_hello"
++        assert tmpl1.render() == "translated_hello"  # Second call should be identical
++
++        # Test ngettext - multiple calls should be consistent
++        tmpl2 = env.from_string('{{ ngettext("item", "items", 1) }}')
++        assert tmpl2.render() == "item"
++        assert tmpl2.render() == "item"  # Second call should be identical
++
++        tmpl3 = env.from_string('{{ ngettext("item", "items", 2) }}')
++        assert tmpl3.render() == "items"
++        assert tmpl3.render() == "items"  # Second call should be identical
++
++        # Test pgettext - multiple calls should be consistent
++        tmpl4 = env.from_string('{{ pgettext("menu", "File") }}')
++        assert tmpl4.render() == "menu:File"
++        assert tmpl4.render() == "menu:File"  # Second call should be identical
++
++        # Test trans blocks - multiple calls should be consistent
++        tmpl5 = env.from_string('{% trans %}Hello World{% endtrans %}')
++        assert tmpl5.render() == "translated_Hello World"
++        assert tmpl5.render() == "translated_Hello World"  # Second call should be identical
++
++    def test_cache_clear_functionality(self):
++        """Test that cache clearing works and doesn't affect functionality."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables(lambda x: f"translated_{x}", lambda s, p, n: s if n == 1 else p)
++        ext = list(env.extensions.values())[0]
++
++        tmpl = env.from_string('{{ gettext("hello") }}')
++
++        # Render template to potentially populate cache
++        result1 = tmpl.render()
++        assert result1 == "translated_hello"
++
++        # Clear cache
++        ext.clear_cache()
++
++        # Render again - should still work identically
++        result2 = tmpl.render()
++        assert result2 == "translated_hello"
++        assert result1 == result2
++
++    def test_backward_compatibility(self):
++        """Test that existing i18n functionality remains unchanged."""
++        # This test ensures that adding caching doesn't break existing behavior
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.install_gettext_callables(
++            lambda x: f"translated_{x}",
++            lambda s, p, n: s if n == 1 else p
++        )
++
++        # Test various i18n patterns that should work exactly as before
++        templates_and_expected = [
++            ('{{ gettext("hello") }}', "translated_hello"),
++            ('{{ _("world") }}', "translated_world"),
++            ('{{ ngettext("item", "items", 1) }}', "item"),
++            ('{{ ngettext("item", "items", 2) }}', "items"),
++            ('{% trans %}Simple text{% endtrans %}', "translated_Simple text"),
++            ('{% trans count=1 %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}', "1 item"),
++            ('{% trans count=2 %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}', "2 items"),
++        ]
++
++        for template_str, expected in templates_and_expected:
++            tmpl = env.from_string(template_str)
++            result = tmpl.render()
++            assert result == expected, f"Template {template_str} failed: got {result}, expected {expected}"
++
++
++class TestTranslationDomain:
++    def test_trans_domain_basic(self):
++        """Test basic domain functionality with trans tag."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        # Mock domain-aware gettext functions
++        def mock_dgettext(domain, message):
++            if domain == "admin":
++                return f"ADMIN:{message}"
++            return message
++
++        def mock_dngettext(domain, singular, plural, n):
++            if domain == "admin":
++                return f"ADMIN:{singular if n == 1 else plural}"
++            return singular if n == 1 else plural
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++            "dgettext": mock_dgettext,
++            "dngettext": mock_dngettext,
++        })
++
++        # Test basic domain usage
++        tmpl = env.from_string('{% trans domain="admin" %}Hello World{% endtrans %}')
++        assert tmpl.render() == "ADMIN:Hello World"
++
++    def test_trans_domain_with_variables(self):
++        """Test domain with variables."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            if domain == "ui":
++                return f"UI:{message}"
++            return message
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="ui", name="John" %}Hello {{ name }}{% endtrans %}')
++        assert tmpl.render() == "UI:Hello John"
++
++    def test_trans_domain_plural(self):
++        """Test domain with pluralization."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dngettext(domain, singular, plural, n):
++            if domain == "messages":
++                return f"MSG:{singular if n == 1 else plural}"
++            return singular if n == 1 else plural
++
++        env.globals.update({
++            "ngettext": lambda s, p, n: s if n == 1 else p,
++            "dngettext": mock_dngettext,
++        })
++
++        tmpl = env.from_string(
++            '{% trans domain="messages", count=1 %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}'
++        )
++        assert tmpl.render() == "MSG:1 item"
++
++        tmpl = env.from_string(
++            '{% trans domain="messages", count=2 %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}'
++        )
++        assert tmpl.render() == "MSG:2 items"
++
++    def test_trans_domain_with_trimmed(self):
++        """Test domain with trimmed option."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            if domain == "admin":
++                return f"ADMIN:{message}"
++            return message
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string(
++            '{% trans domain="admin", trimmed %}  Hello  \n  World  {% endtrans %}'
++        )
++        assert tmpl.render() == "ADMIN:Hello World"
++
++    def test_trans_domain_error_duplicate(self):
++        """Test error when domain is defined twice."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        with pytest.raises(TemplateAssertionError, match=r"domain.*defined.*twice"):
++            env.from_string('{% trans domain="admin", domain="ui" %}Hello{% endtrans %}')
++
++    def test_trans_domain_error_non_string(self):
++        """Test error when domain is not a string literal."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        with pytest.raises(TemplateAssertionError, match=r"domain.*string.*literal"):
++            env.from_string('{% trans domain=variable %}Hello{% endtrans %}')
++
++    def test_trans_domain_empty_string(self):
++        """Test domain with empty string."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            return f"DOMAIN[{domain}]:{message}"
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="" %}Hello{% endtrans %}')
++        assert tmpl.render() == "DOMAIN[]:Hello"
++
++    def test_trans_domain_special_chars(self):
++        """Test domain with special characters."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            return f"DOMAIN[{domain}]:{message}"
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="admin-ui_v2.0" %}Hello{% endtrans %}')
++        assert tmpl.render() == "DOMAIN[admin-ui_v2.0]:Hello"
++
++    def test_trans_domain_backward_compatibility(self):
++        """Test that trans without domain still works."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        env.globals.update({
++            "gettext": lambda x: f"DEFAULT:{x}",
++            "ngettext": lambda s, p, n: f"DEFAULT:{s if n == 1 else p}",
++        })
++
++        # Test without domain
++        tmpl = env.from_string('{% trans %}Hello World{% endtrans %}')
++        assert tmpl.render() == "DEFAULT:Hello World"
++
++        # Test plural without domain
++        tmpl = env.from_string('{% trans count=2 %}{{ count }} item{% pluralize %}{{ count }} items{% endtrans %}')
++        assert tmpl.render() == "DEFAULT:2 items"
++
++    def test_trans_domain_with_context_vars(self):
++        """Test domain with context variables."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            return f"{domain.upper()}:{message}"
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="user" %}Welcome {{ username }}{% endtrans %}')
++        result = tmpl.render(username="Alice")
++        assert result == "USER:Welcome Alice"
++
++    def test_trans_domain_long_string(self):
++        """Test domain with very long domain name."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++
++        def mock_dgettext(domain, message):
++            return f"[{len(domain)}]:{message}"
++
++        env.globals.update({
++            "gettext": lambda x: x,
++            "dgettext": mock_dgettext,
++        })
++
++        long_domain = "a" * 100
++        template_str = '{% trans domain="' + long_domain + '" %}Hello{% endtrans %}'
++        tmpl = env.from_string(template_str)
++        assert tmpl.render() == "[100]:Hello"
++
++    def test_trans_domain_newstyle_gettext(self):
++        """Test domain with newstyle gettext."""
++        env = Environment(extensions=["jinja2.ext.i18n"])
++        env.newstyle_gettext = True  # type: ignore
++
++        def mock_dgettext(domain, message, **kw):
++            result = f"{domain.upper()}:{message}"
++            return result % kw if kw else result
++
++        env.globals.update({
++            "gettext": lambda x, **kw: x % kw if kw else x,
++            "dgettext": mock_dgettext,
++        })
++
++        tmpl = env.from_string('{% trans domain="admin", name="John" %}Hello {{ name }}{% endtrans %}')
++        assert tmpl.render() == "ADMIN:Hello John"
++
+ 
+ class TestAutoEscape:
+     def test_scoped_setting(self):
+@@ -712,3 +2269,259 @@ class TestAutoEscape:
+         """
+         )
+         assert tmpl.render(x=42, y=23) == "42|23|99|[1][2][3]|42"
++
++
++class TestTranslationExtractor:
++    def test_basic_extraction_marker(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        tmpl = env.from_string(
++            '{% extract comment="Login button" %}'
++            '{{ _("Login") }}'
++            '{% endextract %}'
++        )
++        result = tmpl.render()
++        assert result == "Login"
++
++        # Check that markers were stored
++        markers = env.extraction_markers()
++        assert len(markers) == 1
++        assert markers[0]['markers']['comment'] == "Login button"
++        assert markers[0]['lineno'] == 1
++
++    def test_multiple_marker_attributes(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        tmpl = env.from_string(
++            '{% extract comment="Error message", context="authentication", priority="high" %}'
++            '{{ _("Invalid credentials") }}'
++            '{% endextract %}'
++        )
++        result = tmpl.render()
++        assert result == "Invalid credentials"
++
++        markers = env.extraction_markers()
++        assert len(markers) == 1
++        marker = markers[0]['markers']
++        assert marker['comment'] == "Error message"
++        assert marker['context'] == "authentication"
++        assert marker['priority'] == "high"
++
++    def test_nested_content(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        tmpl = env.from_string(
++            '{% extract comment="Welcome message" %}'
++            '<h1>{{ _("Welcome") }}</h1>'
++            '<p>{{ _("Please log in") }}</p>'
++            '{% endextract %}'
++        )
++        result = tmpl.render()
++        assert result == "<h1>Welcome</h1><p>Please log in</p>"
++
++    def test_multiple_extraction_blocks(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        tmpl = env.from_string(
++            '{% extract comment="Button text" %}'
++            '{{ _("Save") }}'
++            '{% endextract %}'
++            '{% extract comment="Error message", priority="high" %}'
++            '{{ _("File not found") }}'
++            '{% endextract %}'
++        )
++        result = tmpl.render()
++        assert result == "SaveFile not found"
++
++        markers = env.extraction_markers()
++        assert len(markers) == 2
++        assert markers[0]['markers']['comment'] == "Button text"
++        assert markers[1]['markers']['comment'] == "Error message"
++        assert markers[1]['markers']['priority'] == "high"
++
++    def test_empty_extraction_block(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        tmpl = env.from_string(
++            '{% extract comment="Empty block" %}'
++            '{% endextract %}'
++        )
++        result = tmpl.render()
++        assert result == ""
++
++        markers = env.extraction_markers()
++        assert len(markers) == 1
++        assert markers[0]['markers']['comment'] == "Empty block"
++
++    def test_extraction_with_variables(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        tmpl = env.from_string(
++            '{% extract comment="User greeting" %}'
++            '{{ _("Hello, %(name)s!") % {"name": username} }}'
++            '{% endextract %}'
++        )
++        result = tmpl.render(username="Alice")
++        assert result == "Hello, Alice!"
++
++    def test_extraction_marker_syntax_error(self):
++        from jinja2.ext import TranslationExtractorExtension
++        from jinja2.exceptions import TemplateSyntaxError
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++
++        # Missing endextract
++        with pytest.raises(TemplateSyntaxError):
++            env.from_string(
++                '{% extract comment="Test" %}'
++                '{{ _("Test") }}'
++            )
++
++    def test_extraction_with_control_structures(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        tmpl = env.from_string(
++            '{% extract comment="Conditional message" %}'
++            '{% if show_message %}'
++            '{{ _("Message shown") }}'
++            '{% else %}'
++            '{{ _("Message hidden") }}'
++            '{% endif %}'
++            '{% endextract %}'
++        )
++
++        result1 = tmpl.render(show_message=True)
++        assert result1 == "Message shown"
++
++        result2 = tmpl.render(show_message=False)
++        assert result2 == "Message hidden"
++
++    def test_extraction_marker_line_numbers(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        tmpl = env.from_string(
++            'Line 1\n'
++            '{% extract comment="First" %}\n'
++            '{{ _("First message") }}\n'
++            '{% endextract %}\n'
++            'Line 5\n'
++            '{% extract comment="Second" %}\n'
++            '{{ _("Second message") }}\n'
++            '{% endextract %}\n'
++        )
++        tmpl.render()
++
++        markers = env.extraction_markers()
++        assert len(markers) == 2
++        assert markers[0]['lineno'] == 2
++        assert markers[1]['lineno'] == 6
++
++    def test_extraction_with_complex_expressions(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        # Test with non-constant expressions in marker attributes
++        tmpl = env.from_string(
++            '{% extract comment=comment_var, priority=priority_level %}'
++            '{{ _("Dynamic message") }}'
++            '{% endextract %}'
++        )
++        result = tmpl.render(comment_var="Dynamic comment", priority_level="medium")
++        assert result == "Dynamic message"
++
++        markers = env.extraction_markers()
++        assert len(markers) == 1
++        # Non-constant expressions should be stored as string representations
++        assert "comment_var" in str(markers[0]['markers']['comment'])
++        assert "priority_level" in str(markers[0]['markers']['priority'])
++
++    def test_extraction_marker_integration_with_i18n(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        # Test that extraction markers work alongside i18n extension
++        env = Environment(extensions=["jinja2.ext.i18n", TranslationExtractorExtension])
++        env.install_null_translations()
++
++        tmpl = env.from_string(
++            '{% extract comment="Trans block test" %}'
++            '{% trans %}Hello World{% endtrans %}'
++            '{% endextract %}'
++        )
++        result = tmpl.render()
++        assert result == "Hello World"
++
++    def test_extraction_marker_without_attributes(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++        tmpl = env.from_string(
++            '{% extract %}'
++            '{{ _("No attributes") }}'
++            '{% endextract %}'
++        )
++        result = tmpl.render()
++        assert result == "No attributes"
++
++        markers = env.extraction_markers()
++        assert len(markers) == 1
++        assert markers[0]['markers'] == {}
++
++    def test_extraction_marker_environment_isolation(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        # Test that different environments have separate marker storage
++        env1 = Environment(extensions=[TranslationExtractorExtension])
++        env2 = Environment(extensions=[TranslationExtractorExtension])
++        env1.globals['_'] = lambda x: x  # Mock translation function
++        env2.globals['_'] = lambda x: x  # Mock translation function
++
++        tmpl1 = env1.from_string('{% extract comment="Env1" %}{{ _("Message 1") }}{% endextract %}')
++        tmpl2 = env2.from_string('{% extract comment="Env2" %}{{ _("Message 2") }}{% endextract %}')
++
++        tmpl1.render()
++        tmpl2.render()
++
++        markers1 = env1.extraction_markers()
++        markers2 = env2.extraction_markers()
++
++        assert len(markers1) == 1
++        assert len(markers2) == 1
++        assert markers1[0]['markers']['comment'] == "Env1"
++        assert markers2[0]['markers']['comment'] == "Env2"
++
++    def test_extraction_marker_special_characters(self):
++        from jinja2.ext import TranslationExtractorExtension
++
++        env = Environment(extensions=[TranslationExtractorExtension])
++        env.globals['_'] = lambda x: x  # Mock translation function
++
++        # Test with special characters in marker values (now specified in feature.md)
++        tmpl = env.from_string(
++            '{% extract comment="Special chars: <>&\\"\'", context="test/context" %}'
++            '{{ _("Test message") }}'
++            '{% endextract %}'
++        )
++        result = tmpl.render()
++        assert result == "Test message"
++
++        markers = env.extraction_markers()
++        assert len(markers) == 1
++        assert markers[0]['markers']['comment'] == 'Special chars: <>&"\''
++        assert markers[0]['markers']['context'] == "test/context"

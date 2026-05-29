@@ -1,0 +1,101 @@
+diff --git a/crates/typst/src/foundations/str.rs b/crates/typst/src/foundations/str.rs
+index d90b6f206..8a58ee1a8 100644
+--- a/crates/typst/src/foundations/str.rs
++++ b/crates/typst/src/foundations/str.rs
+@@ -179,23 +179,47 @@ impl Str {
+     /// Extracts the first grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn first(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next()
++    pub fn first(
++        &self,
++        /// Whether to select by grapheme (default) or word boundaries.
++        #[named]
++        #[default]
++        unit: Option<Str>,
++    ) -> StrResult<Str> {
++        let unit = selection_unit(unit.as_ref())?;
++        let segment = match unit {
++            SelectionUnit::Grapheme => self.0.graphemes(true).next(),
++            SelectionUnit::Word => first_word(self.0.as_str()),
++        };
++        segment
+             .map(Into::into)
+-            .ok_or_else(string_is_empty)
++            .ok_or_else(|| match unit {
++                SelectionUnit::Grapheme => string_is_empty(),
++                SelectionUnit::Word => string_contains_no_words(),
++            })
+     }
+ 
+     /// Extracts the last grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn last(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next_back()
++    pub fn last(
++        &self,
++        /// Whether to select by grapheme (default) or word boundaries.
++        #[named]
++        #[default]
++        unit: Option<Str>,
++    ) -> StrResult<Str> {
++        let unit = selection_unit(unit.as_ref())?;
++        let segment = match unit {
++            SelectionUnit::Grapheme => self.0.graphemes(true).next_back(),
++            SelectionUnit::Word => last_word(self.0.as_str()),
++        };
++        segment
+             .map(Into::into)
+-            .ok_or_else(string_is_empty)
++            .ok_or_else(|| match unit {
++                SelectionUnit::Grapheme => string_is_empty(),
++                SelectionUnit::Word => string_contains_no_words(),
++            })
+     }
+ 
+     /// Extracts the first grapheme cluster after the specified index. Returns
+@@ -604,6 +628,38 @@ impl Str {
+     }
+ }
+ 
++#[derive(Copy, Clone)]
++enum SelectionUnit {
++    Grapheme,
++    Word,
++}
++
++fn selection_unit(unit: Option<&Str>) -> StrResult<SelectionUnit> {
++    match unit.map(|u| u.as_str()) {
++        None | Some("grapheme") => Ok(SelectionUnit::Grapheme),
++        Some("word") => Ok(SelectionUnit::Word),
++        Some(other) => Err(eco_format!("unknown unit \"{}\"", other)),
++    }
++}
++
++fn first_word(text: &str) -> Option<&str> {
++    text
++        .split_word_bounds()
++        .filter(|segment| segment.chars().any(|ch| !ch.is_whitespace()))
++        .next()
++}
++
++fn last_word(text: &str) -> Option<&str> {
++    text
++        .split_word_bounds()
++        .filter(|segment| segment.chars().any(|ch| !ch.is_whitespace()))
++        .last()
++}
++
++fn string_contains_no_words() -> EcoString {
++    eco_format!("string contains no words")
++}
++
+ impl Deref for Str {
+     type Target = str;
+ 

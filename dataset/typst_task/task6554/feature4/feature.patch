@@ -1,0 +1,77 @@
+diff --git a/crates/typst/src/foundations/str.rs b/crates/typst/src/foundations/str.rs
+index d90b6f20..bdf78449 100644
+--- a/crates/typst/src/foundations/str.rs
++++ b/crates/typst/src/foundations/str.rs
+@@ -179,23 +179,60 @@ impl Str {
+     /// Extracts the first grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn first(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn first(
++        &self,
++        /// Number of times to repeat this operation. Fails if exceeds string length.
++        #[named]
++        #[default(1)]
++        repeat: usize,
++    ) -> StrResult<Str> {
++        if repeat == 0 {
++            return Err(eco_format!("repeat must be at least 1"));
++        }
++        let mut result = EcoString::new();
++        let mut graphemes = self.0.graphemes(true);
++        for i in 0..repeat {
++            match graphemes.next() {
++                Some(g) => result.push_str(g),
++                None => {
++                    if i == 0 {
++                        return Err(string_is_empty());
++                    } else {
++                        return Err(eco_format!("not enough characters (requested {}, but string only has {})", 
++                            repeat, i));
++                    }
++                }
++            }
++        }
++        Ok(result.into())
+     }
+ 
+     /// Extracts the last grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn last(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next_back()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn last(
++        &self,
++        /// Number of times to repeat this operation. Fails if exceeds string length.
++        #[named]
++        #[default(1)]
++        repeat: usize,
++    ) -> StrResult<Str> {
++        if repeat == 0 {
++            return Err(eco_format!("repeat must be at least 1"));
++        }
++        let graphemes: Vec<&str> = self.0.graphemes(true).collect();
++        let len = graphemes.len();
++        if len == 0 {
++            return Err(string_is_empty());
++        }
++        if repeat > len {
++            return Err(eco_format!("not enough characters (requested {}, but string only has {})", repeat, len));
++        }
++        let mut result = EcoString::new();
++        for i in (len - repeat)..len {
++            result.push_str(graphemes[i]);
++        }
++        Ok(result.into())
+     }
+ 
+     /// Extracts the first grapheme cluster after the specified index. Returns

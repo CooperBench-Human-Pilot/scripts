@@ -1,0 +1,84 @@
+diff --git a/crates/typst/src/foundations/str.rs b/crates/typst/src/foundations/str.rs
+index 23a1bd4c..1d9feae9 100644
+--- a/crates/typst/src/foundations/str.rs
++++ b/crates/typst/src/foundations/str.rs
+@@ -181,23 +181,67 @@ impl Str {
+     /// Extracts the first grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn first(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn first(
++        &self,
++        /// Whether to skip leading whitespace.
++        #[named]
++        #[default(false)]
++        skip_whitespace: bool,
++    ) -> StrResult<Str> {
++        if skip_whitespace {
++            let trimmed = self.0.trim_start();
++            if trimmed.is_empty() {
++                if self.0.is_empty() {
++                    return Err(string_is_empty());
++                } else {
++                    return Err(eco_format!("string contains only whitespace"));
++                }
++            }
++            trimmed
++                .graphemes(true)
++                .next()
++                .map(Into::into)
++                .ok_or_else(string_is_empty)
++        } else {
++            self.0
++                .graphemes(true)
++                .next()
++                .map(Into::into)
++                .ok_or_else(string_is_empty)
++        }
+     }
+ 
+     /// Extracts the last grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn last(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next_back()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn last(
++        &self,
++        /// Whether to skip trailing whitespace.
++        #[named]
++        #[default(false)]
++        skip_whitespace: bool,
++    ) -> StrResult<Str> {
++        if skip_whitespace {
++            let trimmed = self.0.trim_end();
++            if trimmed.is_empty() {
++                if self.0.is_empty() {
++                    return Err(string_is_empty());
++                } else {
++                    return Err(eco_format!("string contains only whitespace"));
++                }
++            }
++            trimmed
++                .graphemes(true)
++                .next_back()
++                .map(Into::into)
++                .ok_or_else(string_is_empty)
++        } else {
++            self.0
++                .graphemes(true)
++                .next_back()
++                .map(Into::into)
++                .ok_or_else(string_is_empty)
++        }
+     }
+ 
+     /// Extracts the first grapheme cluster after the specified index. Returns

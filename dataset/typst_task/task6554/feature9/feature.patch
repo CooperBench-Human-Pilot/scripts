@@ -1,0 +1,61 @@
+diff --git a/crates/typst/src/foundations/str.rs b/crates/typst/src/foundations/str.rs
+index d90b6f206..d7f990c12 100644
+--- a/crates/typst/src/foundations/str.rs
++++ b/crates/typst/src/foundations/str.rs
+@@ -179,8 +179,15 @@ impl Str {
+     /// Extracts the first grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn first(&self) -> StrResult<Str> {
+-        self.0
++    pub fn first(
++        &self,
++        /// Characters that should be ignored at the start before extraction.
++        #[named]
++        #[default]
++        strip: Option<Str>,
++    ) -> StrResult<Str> {
++        let working = trim_with_chars(self.0.as_str(), strip.as_ref(), true);
++        working
+             .graphemes(true)
+             .next()
+             .map(Into::into)
+@@ -190,8 +197,15 @@ impl Str {
+     /// Extracts the last grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn last(&self) -> StrResult<Str> {
+-        self.0
++    pub fn last(
++        &self,
++        /// Characters that should be ignored at the end before extraction.
++        #[named]
++        #[default]
++        strip: Option<Str>,
++    ) -> StrResult<Str> {
++        let working = trim_with_chars(self.0.as_str(), strip.as_ref(), false);
++        working
+             .graphemes(true)
+             .next_back()
+             .map(Into::into)
+@@ -604,6 +618,20 @@ impl Str {
+     }
+ }
+ 
++fn trim_with_chars<'a>(text: &'a str, strip: Option<&Str>, from_start: bool) -> &'a str {
++    match strip {
++        Some(chars) if !chars.is_empty() => {
++            let set = chars.as_str();
++            if from_start {
++                text.trim_start_matches(|ch| set.contains(ch))
++            } else {
++                text.trim_end_matches(|ch| set.contains(ch))
++            }
++        }
++        _ => text,
++    }
++}
++
+ impl Deref for Str {
+     type Target = str;
+ 

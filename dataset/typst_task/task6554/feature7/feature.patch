@@ -1,0 +1,117 @@
+diff --git a/crates/typst/src/foundations/str.rs b/crates/typst/src/foundations/str.rs
+index d90b6f20..f86c4657 100644
+--- a/crates/typst/src/foundations/str.rs
++++ b/crates/typst/src/foundations/str.rs
+@@ -179,23 +179,41 @@ impl Str {
+     /// Extracts the first grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn first(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn first(
++        &self,
++        /// Pattern to match: "alpha", "numeric", "alphanumeric", "uppercase", "lowercase", "whitespace"
++        #[named]
++        pattern: Option<Str>,
++    ) -> StrResult<Str> {
++        if let Some(pattern) = pattern {
++            self.find_first_matching(&pattern)
++        } else {
++            self.0
++                .graphemes(true)
++                .next()
++                .map(Into::into)
++                .ok_or_else(string_is_empty)
++        }
+     }
+ 
+     /// Extracts the last grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn last(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next_back()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn last(
++        &self,
++        /// Pattern to match: "alpha", "numeric", "alphanumeric", "uppercase", "lowercase", "whitespace"
++        #[named]
++        pattern: Option<Str>,
++    ) -> StrResult<Str> {
++        if let Some(pattern) = pattern {
++            self.find_last_matching(&pattern)
++        } else {
++            self.0
++                .graphemes(true)
++                .next_back()
++                .map(Into::into)
++                .ok_or_else(string_is_empty)
++        }
+     }
+ 
+     /// Extracts the first grapheme cluster after the specified index. Returns
+@@ -602,6 +620,58 @@ impl Str {
+         }
+         s.into()
+     }
++
++}
++
++impl Str {
++    /// Find the first character matching a pattern.
++    fn find_first_matching(&self, pattern: &str) -> StrResult<Str> {
++        if self.0.is_empty() {
++            return Err(string_is_empty());
++        }
++
++        for grapheme in self.0.graphemes(true) {
++            if matches_pattern(grapheme, pattern)? {
++                return Ok(grapheme.into());
++            }
++        }
++
++        Err(eco_format!("no character matches pattern \"{}\"", pattern))
++    }
++
++    /// Find the last character matching a pattern.
++    fn find_last_matching(&self, pattern: &str) -> StrResult<Str> {
++        if self.0.is_empty() {
++            return Err(string_is_empty());
++        }
++
++        for grapheme in self.0.graphemes(true).rev() {
++            if matches_pattern(grapheme, pattern)? {
++                return Ok(grapheme.into());
++            }
++        }
++
++        Err(eco_format!("no character matches pattern \"{}\"", pattern))
++    }
++}
++
++/// Check if a character matches a pattern.
++fn matches_pattern(grapheme: &str, pattern: &str) -> StrResult<bool> {
++    // Get the first Unicode scalar value from the grapheme
++    let ch = match grapheme.chars().next() {
++        Some(c) => c,
++        None => return Ok(false),
++    };
++
++    match pattern {
++        "alpha" => Ok(ch.is_alphabetic()),
++        "numeric" => Ok(ch.is_numeric()),
++        "alphanumeric" => Ok(ch.is_alphanumeric()),
++        "uppercase" => Ok(ch.is_uppercase()),
++        "lowercase" => Ok(ch.is_lowercase()),
++        "whitespace" => Ok(ch.is_whitespace()),
++        _ => Err(eco_format!("unknown pattern \"{}\"", pattern)),
++    }
+ }
+ 
+ impl Deref for Str {

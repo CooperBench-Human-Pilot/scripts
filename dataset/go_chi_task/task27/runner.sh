@@ -1,0 +1,103 @@
+#!/bin/bash
+
+set -e
+
+# Cleanup function
+cleanup() {
+    echo "Cleaning up repository..."
+    if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        CURRENT_BRANCH_OR_COMMIT=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)
+        echo "Resetting to HEAD ($CURRENT_BRANCH_OR_COMMIT) and cleaning..."
+        git reset --hard HEAD || true
+        git clean -fdx || true
+        echo "Repository cleaned."
+    else
+        echo "Not inside a git repository, skipping git cleanup."
+    fi
+}
+
+trap cleanup EXIT INT TERM
+
+# Get input params
+TEST_PATCH="$1"
+FEATURE_PATCH="$2"
+
+if [[ -z "$TEST_PATCH" ]]; then
+    echo "Usage: docker run -v \$(pwd):/patches <image> <test_patch> [feature_patch]"
+    exit 1
+fi
+
+cd /workspace/repo
+
+# Ensure we start with a clean state
+echo "Ensuring clean repository state..."
+git reset --hard HEAD
+git clean -fdx
+
+# Apply feature patch FIRST (before test patch) so test code can reference feature functions
+if [[ -n "$FEATURE_PATCH" ]]; then
+    echo "Applying feature patch..."
+    if [[ -f "/patches/$FEATURE_PATCH" ]]; then
+        if ! git apply --check "/patches/$FEATURE_PATCH" 2>/dev/null; then
+            echo "Warning: Feature patch check failed. Attempting to apply anyway..."
+        fi
+        if ! git apply "/patches/$FEATURE_PATCH"; then
+            echo "Error: Failed to apply feature patch."
+            echo "Patch file: /patches/$FEATURE_PATCH"
+            exit 1
+        fi
+        echo "Feature patch applied successfully."
+    else
+        echo "Error: Feature patch not found at /patches/$FEATURE_PATCH"
+        exit 1
+    fi
+fi
+
+# Apply test patch with better error handling
+echo "Applying test patch..."
+if [[ -f "/patches/$TEST_PATCH" ]]; then
+    if ! git apply --check "/patches/$TEST_PATCH" 2>/dev/null; then
+        echo "Warning: Patch check failed. Attempting to apply anyway..."
+    fi
+    
+    if ! git apply "/patches/$TEST_PATCH"; then
+        echo "Error: Failed to apply test patch. Repository state may not match expected base commit."
+        echo "Patch file: /patches/$TEST_PATCH"
+        exit 1
+    fi
+    echo "Test patch applied successfully."
+else
+    echo "Error: Test patch not found at /patches/$TEST_PATCH"
+    exit 1
+fi
+
+# Analyze test patch for test functions
+echo "Analyzing test patch for test functions..."
+TEST_FUNCS=()
+NEW_FUNCS=$(grep -o "func Test[a-zA-Z0-9_]*" "/patches/$TEST_PATCH" 2>/dev/null | sed 's/func //' || true)
+for func in $NEW_FUNCS; do
+    TEST_FUNCS+=("$func")
+done
+
+TEST_PATTERN=""
+if [ ${#TEST_FUNCS[@]} -gt 0 ]; then
+    TEST_PATTERN=$(IFS="|"; echo "${TEST_FUNCS[*]}" | sort -u)
+    echo "Found test functions to run: $TEST_PATTERN"
+fi
+
+# Run Go tests with timeout
+echo "Running Go tests..."
+if [ -n "$TEST_PATTERN" ]; then
+    timeout 300 go test -run "$TEST_PATTERN" ./...
+    TEST_EXIT_CODE=$?
+else
+    timeout 300 go test ./...
+    TEST_EXIT_CODE=$?
+fi
+
+if [ "$TEST_EXIT_CODE" -ne 0 ]; then
+    echo "Error: Go tests failed with exit code $TEST_EXIT_CODE"
+    exit "$TEST_EXIT_CODE"
+fi
+
+echo "Test execution completed!"

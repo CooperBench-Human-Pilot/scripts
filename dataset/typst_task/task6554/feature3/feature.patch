@@ -1,0 +1,50 @@
+diff --git a/crates/typst/src/foundations/str.rs b/crates/typst/src/foundations/str.rs
+index d90b6f20..408e3822 100644
+--- a/crates/typst/src/foundations/str.rs
++++ b/crates/typst/src/foundations/str.rs
+@@ -179,23 +179,33 @@ impl Str {
+     /// Extracts the first grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn first(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn first(
++        &self,
++        /// Whether to return none instead of error for empty strings.
++        #[named]
++        #[default(false)]
++        safe: bool,
++    ) -> StrResult<Value> {
++        match self.0.graphemes(true).next() {
++            Some(g) => Ok(Value::Str(g.into())),
++            None => if safe { Ok(Value::None) } else { Err(string_is_empty()) },
++        }
+     }
+ 
+     /// Extracts the last grapheme cluster of the string.
+     /// Fails with an error if the string is empty.
+     #[func]
+-    pub fn last(&self) -> StrResult<Str> {
+-        self.0
+-            .graphemes(true)
+-            .next_back()
+-            .map(Into::into)
+-            .ok_or_else(string_is_empty)
++    pub fn last(
++        &self,
++        /// Whether to return none instead of error for empty strings.
++        #[named]
++        #[default(false)]
++        safe: bool,
++    ) -> StrResult<Value> {
++        match self.0.graphemes(true).next_back() {
++            Some(g) => Ok(Value::Str(g.into())),
++            None => if safe { Ok(Value::None) } else { Err(string_is_empty()) },
++        }
+     }
+ 
+     /// Extracts the first grapheme cluster after the specified index. Returns

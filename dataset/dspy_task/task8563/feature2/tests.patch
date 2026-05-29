@@ -1,0 +1,155 @@
+diff --git a/tests/adapters/test_tool.py b/tests/adapters/test_tool.py
+index 18571453..8b16200b 100644
+--- a/tests/adapters/test_tool.py
++++ b/tests/adapters/test_tool.py
+@@ -5,7 +5,7 @@ import pytest
+ from pydantic import BaseModel
+ 
+ import dspy
+-from dspy.adapters.types.tool import Tool, ToolCalls
++from dspy.adapters.types.tool import Tool, ToolCalls, convert_input_schema_to_tool_args
+ 
+ 
+ # Test fixtures
+@@ -394,42 +394,33 @@ def test_async_tool_call_in_sync_mode():
+ 
+ 
+ TOOL_CALL_TEST_CASES = [
+-    ([], [{"type": "tool_calls", "tool_calls": []}]),
++    ([], {"tool_calls": []}),
+     (
+         [{"name": "search", "args": {"query": "hello"}}],
+-        [
+-            {
+-                "type": "tool_calls",
+-                "tool_calls": [{"type": "function", "function": {"name": "search", "arguments": {"query": "hello"}}}],
+-            }
+-        ],
++        {
++            "tool_calls": [{"type": "function", "function": {"name": "search", "arguments": {"query": "hello"}}}],
++        },
+     ),
+     (
+         [
+             {"name": "search", "args": {"query": "hello"}},
+             {"name": "translate", "args": {"text": "world", "lang": "fr"}},
+         ],
+-        [
+-            {
+-                "type": "tool_calls",
+-                "tool_calls": [
+-                    {"type": "function", "function": {"name": "search", "arguments": {"query": "hello"}}},
+-                    {
+-                        "type": "function",
+-                        "function": {"name": "translate", "arguments": {"text": "world", "lang": "fr"}},
+-                    },
+-                ],
+-            }
+-        ],
++        {
++            "tool_calls": [
++                {"type": "function", "function": {"name": "search", "arguments": {"query": "hello"}}},
++                {
++                    "type": "function",
++                    "function": {"name": "translate", "arguments": {"text": "world", "lang": "fr"}},
++                },
++            ],
++        },
+     ),
+     (
+         [{"name": "get_time", "args": {}}],
+-        [
+-            {
+-                "type": "tool_calls",
+-                "tool_calls": [{"type": "function", "function": {"name": "get_time", "arguments": {}}}],
+-            }
+-        ],
++        {
++            "tool_calls": [{"type": "function", "function": {"name": "get_time", "arguments": {}}}],
++        },
+     ),
+ ]
+ 
+@@ -444,6 +435,81 @@ def test_tool_calls_format_basic(tool_calls_data, expected):
+     assert result == expected
+ 
+ 
++def test_toolcalls_validate_input_with_string():
++    """Test that ToolCalls.validate_input can handle string input."""
++    input_str = 'search(query="hello world")'
++ 
++    result = ToolCalls.model_validate(input_str)
++    assert isinstance(result, ToolCalls)
++    assert len(result.tool_calls) == 1
++    assert result.tool_calls[0].name == "search"
++    assert result.tool_calls[0].args == {"query": "hello world"}
++
++
++def test_toolcalls_validate_input_with_multiple_calls():
++    """Test that ToolCalls.validate_input can handle multiple calls in string."""
++    input_str = '''search(query="nlp")
++translate(text="world", lang="fr")'''
++ 
++    result = ToolCalls.model_validate(input_str)
++    assert isinstance(result, ToolCalls)
++    assert len(result.tool_calls) == 2
++    assert result.tool_calls[0].name == "search"
++    assert result.tool_calls[1].name == "translate"
++
++
++def test_parse_python_calls_basic():
++    """Test basic Python call parsing."""
++    from dspy.adapters.types.tool import parse_python_calls
++ 
++    input_str = 'search(query="hello")'
++    result = parse_python_calls(input_str)
++ 
++    expected = {
++        "tool_calls": [
++            {"name": "search", "args": {"query": "hello"}}
++        ]
++    }
++    assert result == expected
++
++
++def test_parse_python_calls_multiple():
++    """Test parsing multiple Python calls."""
++    from dspy.adapters.types.tool import parse_python_calls
++ 
++    input_str = 'search(query="nlp"); translate(text="world", lang="fr")'
++    result = parse_python_calls(input_str)
++ 
++    expected = {
++        "tool_calls": [
++            {"name": "search", "args": {"query": "nlp"}},
++            {"name": "translate", "args": {"text": "world", "lang": "fr"}}
++        ]
++    }
++    assert result == expected
++
++
++def test_parse_python_calls_positional_error():
++    """Test that positional arguments raise a clear error."""
++    from dspy.adapters.types.tool import parse_python_calls
++ 
++    input_str = 'search("hello world")'
++ 
++    with pytest.raises(ValueError, match="Only keyword arguments supported"):
++        parse_python_calls(input_str)
++
++
++def test_parse_python_calls_variable_error():
++    """Test that variable names raise an error."""
++    from dspy.adapters.types.tool import parse_python_calls
++ 
++    input_str = 'search(query=query_var)'
++ 
++    with pytest.raises(ValueError, match="Only literal values are allowed"):
++        parse_python_calls(input_str)
++
++
++
+ def test_tool_calls_format_from_dict_list():
+     """Test format works with ToolCalls created from from_dict_list."""
+     tool_calls_dicts = [
+
