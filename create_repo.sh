@@ -18,5 +18,5 @@ curl -s -X POST \
     \"name\": \"$REPO_NAME\",
     \"description\": \"Created via API\",
     \"private\": false,
-    \"auto_init\": true
+    \"auto_init\": false
   }" | jq '.html_url'
